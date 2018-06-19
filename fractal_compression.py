@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from scipy import ndimage
 import numpy as np
+import cv2
+from skimage.measure import compare_ssim as ssim
 
 def get_greyscale_image(img):
 	return np.mean(img[:,:,:2], 2)
@@ -41,7 +43,7 @@ def generate_all_transformed_blocks(img, source_size, destination_size, step):
 				transformed_blocks.append((k, l, direction, angle, apply_transform(S, direction, angle)))
 	return transformed_blocks
 
-def compress(img, source_size, destination_size, step):
+def compress(img, source_size, destination_size, step, list):
 	transforms = []
 	transformed_blocks = generate_all_transformed_blocks(img, source_size, destination_size, step)
 	for i in range(img.shape[0] // destination_size):
@@ -50,7 +52,8 @@ def compress(img, source_size, destination_size, step):
 			transforms[i].append(None)
 			min_d = float('inf')
 			D = img[i*destination_size:(i+1)*destination_size,j*destination_size:(j+1)*destination_size]
-			for k, l, direction, angle, S in transformed_blocks:
+			for m in list:
+				k, l, direction, angle, S = transformed_blocks[m]
 				contrast, brightness = find_contrast_and_brightness2(D, S)
 				S = contrast*S + brightness
 				d = np.sum(np.square(D - S))
@@ -59,15 +62,13 @@ def compress(img, source_size, destination_size, step):
 					transforms[i][j] = (k, l, direction, angle, contrast, brightness)
 	return transforms
 
-def decompress(transforms, source_size, destination_size, step, iterations, nb_iter=3):
+def decompress(transforms, source_size, destination_size, step, nb_iter=6):
 	factor = source_size // destination_size
 	height = len(transforms) * destination_size
 	width = len(transforms[0]) * destination_size
-	# iterations = [np.random.randint(0, 256, (height, width))]
-	# print(iterations) # type-list
+	iterations = [np.random.randint(0, 256, (height, width))]
 	cur_img = np.zeros((height, width))
 	for i_iter in range(nb_iter):
-		start_time = time.time()
 		for i in range(len(transforms)):
 			for j in range(len(transforms[i])):
 				k, l, flip, angle, contrast, brightness = transforms[i][j]
@@ -76,25 +77,7 @@ def decompress(transforms, source_size, destination_size, step, iterations, nb_i
 				cur_img[i*destination_size:(i+1)*destination_size,j*destination_size:(j+1)*destination_size] = D
 		iterations.append(cur_img)
 		cur_img = np.zeros((height, width))
-		print("time = %.5f" % (time.time() - start_time))
 	return iterations
-
-def plot_iterations(iterations, target=None):
-	plt.figure()
-	nb_row = math.ceil(np.sqrt(len(iterations)))
-	nb_cols = nb_row
-	for i, img in enumerate(iterations):
-		plt.subplot(nb_row, nb_cols, i+1)
-		plt.imshow(img, cmap='gray', vmin=0, vmax=255, interpolation='none')
-		if target is None:
-			plt.title(str(i))
-		else:
-			plt.title(str(i) + ' (' + '{0:.2f}'.format(np.sqrt(np.mean(np.square(target - img)))) + ')')
-		frame = plt.gca()
-		frame.axes.get_xaxis().set_visible(False)
-		frame.axes.get_yaxis().set_visible(False)
-	plt.tight_layout()
-
 
 directions = [1, -1]
 angles = [0, 90, 180, 270]
@@ -106,19 +89,45 @@ def args_parser():
         print "Not enough files"
         sys.exit(1)
     return args[1], args[2], args[3], args[4]
-					
+
+def mse(imageA, imageB):
+    err = np.sum((imageA.astype("float") - imageB.astype("float")) ** 2)
+    err /= float(imageA.shape[0] * imageA.shape[1])
+    return err
+
+def psnr(imageA, imageB):
+  mse = np.mean( (imageA - imageB) ** 2 )
+  if mse == 0:
+      return 100
+  PIXEL_MAX = 255.0
+  return 20 * math.log10(PIXEL_MAX / math.sqrt(mse))
+
+def complete_test(method_name, list, img):
+	print("%s:" % method_name)
+	start_time = time.time()
+	transforms = compress(img, 8, 4, 8, list)
+	iterations = decompress(transforms, 8, 4, 8)
+	img2 = iterations[len(iterations) - 1]
+	plt.figure()
+	plt.imshow(img2, cmap='gray', interpolation='none')
+	plt.title(method_name)
+	m = mse(img, img2)
+	s = ssim(np.array(img), np.array(img2))
+	p = psnr(img, img2)
+	print("time = %.5f" % (time.time() - start_time))
+	print("MSE = %s, SSIM = %.3f, PSNR = %s" % (m, s, p))
+
 if __name__ == '__main__':
-	imgPath, congruentFile, zikkuratFile, mersenneFile = args_parser()
-	cong = np.fromfile(congruentFile, int, -1, ' ')
-	iterations = np.array(map(lambda item: item.tolist(), np.split(cong, 10)))
-	# zikk = open(zikkuratFile, 'r').read().split()
-	# mers = open(mersenneFile, 'r').read().split()
+	imgPath, congruent_file, zikkurat_file, mersenne_file = args_parser()
 	img = mpimg.imread(imgPath)
 	img = get_greyscale_image(img)
 	img = reduce(img, 4)
 	plt.figure()
 	plt.imshow(img, cmap='gray', interpolation='none')
-	transforms = compress(img, 8, 4, 8)
-	iterations = decompress(transforms, 8, 4, 8, iterations)
-	plot_iterations(iterations, img)
+	cong = np.fromfile(congruent_file, int, -1, ' ').tolist()
+	zikk = np.fromfile(zikkurat_file, int, -1, ' ').tolist()
+	mers = np.fromfile(mersenne_file, int, -1, ' ').tolist()
+	complete_test('Конгруэнтный', cong, img)
+	complete_test('Зиккурат', zikk, img)
+	complete_test('Мерсенн', mers, img)
 	plt.show()
